@@ -38,17 +38,15 @@ static struct ex_governor_data {
 #define DEF_GBOOST_MIN_FREQ			(1574400)
 #define DEF_MAX_SCREEN_OFF_FREQ			(1728000)
 #define MIN_SAMPLING_RATE			(10000)
-#define FREQ_NEED_BURST(x)			(x < 600000 ? 1 : 0)
+#define FREQ_NEED_BURST(x)			(x < 800000 ? 1 : 0)
+#define MAX(x,y)				(x > y ? x : y)
+#define MIN(x,y)				(x < y ? x : y)
 
 static DEFINE_PER_CPU(struct ex_cpu_dbs_info_s, ex_cpu_dbs_info);
-
-extern bool cpuboost_enable;
-static bool cpuboost_enable_flag = false;
 
 static unsigned int up_threshold_level[2] __read_mostly = {95, 85};
 
 static struct ex_governor_data {
-	spinlock_t input_boost_lock;
 	bool input_event_boost;
 	unsigned long input_event_boost_expired;
 	unsigned int input_event_timeout;
@@ -78,12 +76,10 @@ static int input_event_boosted(void)
 	spin_lock_irqsave(&ex_data.input_boost_lock, flags);
 	if (ex_data.input_event_boost) {
 		if (time_before(jiffies, ex_data.input_event_boost_expired)) {
-			spin_unlock_irqrestore(&ex_data.input_boost_lock, flags);
 			return 1;
 		}
 		ex_data.input_event_boost = false;
 	}
-	spin_unlock_irqrestore(&ex_data.input_boost_lock, flags);
 
 	return 0;
 }
@@ -106,20 +102,18 @@ static inline unsigned int ex_freq_increase(struct cpufreq_policy *p, unsigned i
 static void freq_increase(struct cpufreq_policy *p, unsigned int freq)
 {
 	if (freq > p->max) {
-		freq = p->max;
+		return p->max;
 	} 
 	
-	else if ((input_event_boosted() || ex_data.g_count > 30) &&
-			freq < ex_data.input_min_freq) {
-		freq = ex_data.input_min_freq;
+	else if (input_event_boosted() || ex_data.g_count > 30) {
+		freq = MAX(freq, ex_data.input_min_freq);
 	} 
 
-	else if (ex_data.suspended && freq > ex_data.max_screen_off_freq) {
-		freq = ex_data.max_screen_off_freq;
+	else if (ex_data.suspended) {
+		freq = MIN(freq, ex_data.max_screen_off_freq);
 	}
 
-	__cpufreq_driver_target(p, freq, (freq < p->max) ?
-			CPUFREQ_RELATION_L : CPUFREQ_RELATION_H);
+	return freq;
 }
 
 static void ex_check_cpu(int cpu, unsigned int load)
@@ -138,6 +132,8 @@ static void ex_check_cpu(int cpu, unsigned int load)
 	unsigned int j, avg_load;
 
 	cpufreq_notify_utilization(policy, load);
+
+	cur_freq = policy->cur;
 
 	for_each_cpu(j, policy->cpus) {
 		if (load > max_load_freq)
@@ -170,11 +166,13 @@ static void ex_check_cpu(int cpu, unsigned int load)
 			freq_next = policy->max;
 		} else {
 			freq_next = policy->max * avg_load / 100;
-			if (freq_next < ex_tuners->gboost_min_freq)
-				freq_next = ex_tuners->gboost_min_freq;
+			freq_next = MAX(freq_next, ex_tuners->gboost_min_freq);
 		}
 
-		freq_increase(policy, freq_next);
+		target_freq = ex_freq_increase(policy, freq_next);
+
+		__cpufreq_driver_target(policy, target_freq, CPUFREQ_RELATION_H);
+
 		goto finished;
 	} 
 
@@ -198,7 +196,7 @@ static void ex_check_cpu(int cpu, unsigned int load)
 		}
 		
 		else if (avg_load <= up_threshold_level[1]) {
-			freq_next = policy->cur;
+			freq_next = cur_freq;
 		}
 	
 		else {		
@@ -219,11 +217,14 @@ static void ex_check_cpu(int cpu, unsigned int load)
 			}
 		
 			else {
-				freq_next = policy->cur + 150000;
+				freq_next = cur_freq + 300000;
 			}
 		}
 
-		freq_increase(policy, freq_next);
+		target_freq = ex_freq_increase(policy, freq_next);
+
+		__cpufreq_driver_target(policy, target_freq, CPUFREQ_RELATION_H);
+
 		goto finished;
 	}
 
@@ -284,8 +285,6 @@ static void ex_dbs_timer(struct work_struct *work)
 static void dbs_input_event(struct input_handle *handle, unsigned int type,
 		unsigned int code, int value)
 {
-	unsigned long flags;
-
 	if (ex_data.suspended)
 		return;
 
@@ -301,7 +300,6 @@ static void dbs_input_event(struct input_handle *handle, unsigned int type,
 			ex_data.input_event_boost = true;
 			ex_data.input_event_boost_expired = jiffies +
 				usecs_to_jiffies(ex_data.input_event_timeout * 1000);
-			spin_unlock_irqrestore(&ex_data.input_boost_lock, flags);
 		}
 	}
 }
@@ -598,11 +596,6 @@ static int ex_init(struct dbs_data *dbs_data)
 {
 	struct ex_dbs_tuners *tuners;
 
-	if (cpuboost_enable)  {
-		cpuboost_enable_flag = true;
-		cpuboost_enable = false;
-	}
-
 	tuners = kzalloc(sizeof(*tuners), GFP_KERNEL);
 	if (!tuners) {
 		pr_err("%s: kzalloc failed\n", __func__);
@@ -634,9 +627,6 @@ static int ex_init(struct dbs_data *dbs_data)
 
 static void ex_exit(struct dbs_data *dbs_data)
 {
-	if (cpuboost_enable_flag)
-		cpuboost_enable = true;
-
 	fb_unregister_client(&ex_data.notif);
 	input_unregister_handler(&dbs_input_handler);
 	kfree(dbs_data->tuners);
