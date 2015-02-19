@@ -21,7 +21,7 @@
 #define DEF_FREQUENCY_UP_THRESHOLD		(90)
 #define DEF_FREQUENCY_DOWN_DIFFERENTIAL		(20)
 #define DEF_INPUT_EVENT_MIN_FREQ		(1267200)
-#define DEF_INPUT_EVENT_TIMEOUT			(500)
+#define DEF_INPUT_EVENT_TIMEOUT			(600)
 #define DEF_GBOOST_MIN_FREQ			(1728000)
 #define DEF_MAX_SCREEN_OFF_FREQ			(2265000)
 #define MIN_SAMPLING_RATE			(10000)
@@ -232,10 +232,6 @@ static void ex_check_cpu(int cpu, unsigned int load)
 		goto finished;
 	}
 
-	if (input_event_boosted(cpu)) {
-		goto finished;
-	}
-
 	if (cur_freq == policy->min){
 	if (policy->cur == policy->min){
 		goto finished;
@@ -252,6 +248,10 @@ static void ex_check_cpu(int cpu, unsigned int load)
 		freq_next = MAX(freq_next, policy->min);
 		if (freq_next < policy->min)
 			freq_next = policy->min;
+		if (input_event_boosted(cpu))
+			freq_next = MAX(freq_next, ex_data.input_min_freq);
+		else
+			freq_next = MAX(freq_next, policy->min);
 
 		__cpufreq_driver_target(policy, freq_next,
 			CPUFREQ_RELATION_L);
