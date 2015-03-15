@@ -12,7 +12,6 @@
  */
 
 #include <linux/slab.h>
-#include <linux/input.h>
 #include <linux/fb.h>
 #include <linux/msm_kgsl.h>
 #include "cpufreq_governor.h"
@@ -20,11 +19,12 @@
 /* elementalx governor macros */
 #define DEF_FREQUENCY_UP_THRESHOLD		(90)
 #define DEF_FREQUENCY_DOWN_DIFFERENTIAL		(20)
-#define DEF_INPUT_EVENT_MIN_FREQ		(1267200)
-#define DEF_INPUT_EVENT_TIMEOUT			(0)
+#define DEF_ACTIVE_FLOOR_FREQ			(960000)
 #define DEF_GBOOST_MIN_FREQ			(1728000)
 #define DEF_MAX_SCREEN_OFF_FREQ			(2265000)
 #define MIN_SAMPLING_RATE			(10000)
+#define DEF_SAMPLING_DOWN_FACTOR		(8)
+#define MAX_SAMPLING_DOWN_FACTOR		(20)
 #define FREQ_NEED_BURST(x)			(x < 800000 ? 1 : 0)
 #define MAX(x,y)				(x > y ? x : y)
 #define MIN(x,y)				(x < y ? x : y)
@@ -51,14 +51,14 @@ static struct ex_governor_data {
 	unsigned long input_event_boost_expired;
 	unsigned int input_event_timeout;
 	unsigned int input_min_freq;
+	unsigned int active_floor_freq;
 	unsigned int max_screen_off_freq;
 	unsigned int prev_load;
 	unsigned int g_count;
 	bool suspended;
 	struct notifier_block notif;
 } ex_data = {
-	.input_event_timeout = DEF_INPUT_EVENT_TIMEOUT,
-	.input_min_freq = DEF_INPUT_EVENT_MIN_FREQ,
+	.active_floor_freq = DEF_ACTIVE_FLOOR_FREQ,
 	.max_screen_off_freq = DEF_MAX_SCREEN_OFF_FREQ,
 	.prev_load = 0,
 	.g_count = 0,
@@ -93,8 +93,8 @@ static inline unsigned int ex_freq_increase(struct cpufreq_policy *p, unsigned i
 		return p->max;
 	} 
 	
-	else if (input_event_boosted(cpu) || ex_data.g_count > 30) {
-		freq = MAX(freq, ex_data.input_min_freq);
+	else if (ex_data.g_count > 30) {
+		freq = MAX(freq, ex_data.active_floor_freq);
 	} 
 
 	else if (ex_data.suspended) {
@@ -185,6 +185,8 @@ static void ex_check_cpu(int cpu, unsigned int load)
 		if (input_event_boosted() && FREQ_NEED_BURST(cur_freq) &&
 	if (max_load_freq > up_threshold_level[1] * policy->cur) {
 		if (input_event_boosted() && FREQ_NEED_BURST(policy->cur) &&
+		dbs_info->down_floor = 0;
+
 		if (FREQ_NEED_BURST(cur_freq) &&
 				load > up_threshold_level[0]) {
 			freq_next = policy->max;
@@ -232,6 +234,9 @@ static void ex_check_cpu(int cpu, unsigned int load)
 		goto finished;
 	}
 
+	if (++dbs_info->down_floor > ex_tuners->sampling_down_factor)
+		dbs_info->down_floor = 0;
+
 	if (cur_freq == policy->min){
 	if (policy->cur == policy->min){
 		goto finished;
@@ -241,6 +246,7 @@ static void ex_check_cpu(int cpu, unsigned int load)
 	    (ex_tuners->up_threshold - ex_tuners->down_differential) *
 	     cur_freq) {
 	     policy->cur) {
+
 		freq_next = max_load_freq /
 				(ex_tuners->up_threshold -
 				 ex_tuners->down_differential);
@@ -250,6 +256,8 @@ static void ex_check_cpu(int cpu, unsigned int load)
 			freq_next = policy->min;
 		if (input_event_boosted(cpu))
 			freq_next = MAX(freq_next, ex_data.input_min_freq);
+		if (dbs_info->down_floor)
+			freq_next = MAX(freq_next, ex_data.active_floor_freq);
 		else
 			freq_next = MAX(freq_next, policy->min);
 
@@ -500,23 +508,7 @@ static ssize_t store_gboost_min_freq(struct dbs_data *dbs_data,
 	return count;
 }
 
-static ssize_t store_input_event_timeout(struct dbs_data *dbs_data,
-		const char *buf, size_t count)
-{
-	struct ex_dbs_tuners *ex_tuners = dbs_data->tuners;
-	unsigned int input;
-	int ret;
-	ret = sscanf(buf, "%u", &input);
-
-	if (ret != 1 || input > 5000)
-		return -EINVAL;
-
-	ex_tuners->input_event_timeout = input;
-	ex_data.input_event_timeout = ex_tuners->input_event_timeout;
-	return count;
-}
-
-static ssize_t store_input_min_freq(struct dbs_data *dbs_data,
+static ssize_t store_active_floor_freq(struct dbs_data *dbs_data,
 		const char *buf, size_t count)
 {
 	struct ex_dbs_tuners *ex_tuners = dbs_data->tuners;
@@ -527,8 +519,8 @@ static ssize_t store_input_min_freq(struct dbs_data *dbs_data,
 	if (ret != 1)
 		return -EINVAL;
 
-	ex_tuners->input_min_freq = input;
-	ex_data.input_min_freq = ex_tuners->input_min_freq;
+	ex_tuners->active_floor_freq = input;
+	ex_data.active_floor_freq = ex_tuners->active_floor_freq;
 	return count;
 }
 
@@ -551,14 +543,29 @@ static ssize_t store_max_screen_off_freq(struct dbs_data *dbs_data,
 	return count;
 }
 
+static ssize_t store_sampling_down_factor(struct dbs_data *dbs_data,
+		const char *buf, size_t count)
+{
+	struct ex_dbs_tuners *ex_tuners = dbs_data->tuners;
+	unsigned int input;
+	int ret;
+	ret = sscanf(buf, "%u", &input);
+
+	if (ret != 1 || input > MAX_SAMPLING_DOWN_FACTOR || input < 0)
+		return -EINVAL;
+
+	ex_tuners->sampling_down_factor = input;
+	return count;
+}
+
 show_store_one(ex, sampling_rate);
 show_store_one(ex, up_threshold);
 show_store_one(ex, down_differential);
 show_store_one(ex, gboost);
 show_store_one(ex, gboost_min_freq);
-show_store_one(ex, input_event_timeout);
-show_store_one(ex, input_min_freq);
+show_store_one(ex, active_floor_freq);
 show_store_one(ex, max_screen_off_freq);
+show_store_one(ex, sampling_down_factor);
 declare_show_sampling_rate_min(ex);
 
 gov_sys_pol_attr_rw(sampling_rate);
@@ -566,9 +573,9 @@ gov_sys_pol_attr_rw(up_threshold);
 gov_sys_pol_attr_rw(down_differential);
 gov_sys_pol_attr_rw(gboost);
 gov_sys_pol_attr_rw(gboost_min_freq);
-gov_sys_pol_attr_rw(input_event_timeout);
-gov_sys_pol_attr_rw(input_min_freq);
+gov_sys_pol_attr_rw(active_floor_freq);
 gov_sys_pol_attr_rw(max_screen_off_freq);
+gov_sys_pol_attr_rw(sampling_down_factor);
 gov_sys_pol_attr_ro(sampling_rate_min);
 
 static struct attribute *dbs_attributes_gov_sys[] = {
@@ -578,9 +585,9 @@ static struct attribute *dbs_attributes_gov_sys[] = {
 	&down_differential_gov_sys.attr,
 	&gboost_gov_sys.attr,
 	&gboost_min_freq_gov_sys.attr,
-	&input_event_timeout_gov_sys.attr,
-	&input_min_freq_gov_sys.attr,
+	&active_floor_freq_gov_sys.attr,
 	&max_screen_off_freq_gov_sys.attr,
+	&sampling_down_factor_gov_sys.attr,
 	NULL
 };
 
@@ -596,9 +603,9 @@ static struct attribute *dbs_attributes_gov_pol[] = {
 	&down_differential_gov_pol.attr,
 	&gboost_gov_pol.attr,
 	&gboost_min_freq_gov_pol.attr,
-	&input_event_timeout_gov_pol.attr,
-	&input_min_freq_gov_pol.attr,
+	&active_floor_freq_gov_pol.attr,
 	&max_screen_off_freq_gov_pol.attr,
+	&sampling_down_factor_gov_pol.attr,
 	NULL
 };
 
@@ -624,15 +631,12 @@ static int ex_init(struct dbs_data *dbs_data)
 	tuners->ignore_nice_load = 0;
 	tuners->gboost = 1;
 	tuners->gboost_min_freq = DEF_GBOOST_MIN_FREQ;
-	tuners->input_event_timeout = DEF_INPUT_EVENT_TIMEOUT;
-	tuners->input_min_freq = DEF_INPUT_EVENT_MIN_FREQ;
+	tuners->active_floor_freq = DEF_ACTIVE_FLOOR_FREQ;
 	tuners->max_screen_off_freq = DEF_MAX_SCREEN_OFF_FREQ;
+	tuners->sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR;
 
 	dbs_data->tuners = tuners;
 	dbs_data->min_sampling_rate = MIN_SAMPLING_RATE;
-
-	if (input_register_handler(&dbs_input_handler))
-		pr_err("%s: Failed to register input_handler\n", __func__);
 
 	ex_data.notif.notifier_call = fb_notifier_callback;
 	if (fb_register_client(&ex_data.notif))
@@ -645,7 +649,6 @@ static int ex_init(struct dbs_data *dbs_data)
 static void ex_exit(struct dbs_data *dbs_data)
 {
 	fb_unregister_client(&ex_data.notif);
-	input_unregister_handler(&dbs_input_handler);
 	kfree(dbs_data->tuners);
 }
 
