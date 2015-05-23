@@ -12,14 +12,12 @@
  */
 
 #include <linux/slab.h>
-#include <linux/msm_kgsl.h>
 #include "cpufreq_governor.h"
 
 /* elementalx governor macros */
 #define DEF_FREQUENCY_UP_THRESHOLD		(90)
 #define DEF_FREQUENCY_DOWN_DIFFERENTIAL		(20)
 #define DEF_ACTIVE_FLOOR_FREQ			(960000)
-#define DEF_GBOOST_MIN_FREQ			(1574400)
 #define MIN_SAMPLING_RATE			(10000)
 #define DEF_SAMPLING_DOWN_FACTOR		(4)
 #define MAX_SAMPLING_DOWN_FACTOR		(20)
@@ -52,11 +50,9 @@ static struct ex_governor_data {
 	unsigned int input_min_freq;
 	unsigned int active_floor_freq;
 	unsigned int prev_load;
-	unsigned int g_count;
 } ex_data = {
 	.active_floor_freq = DEF_ACTIVE_FLOOR_FREQ,
 	.prev_load = 0,
-	.g_count = 0,
 };
 
 
@@ -597,39 +593,6 @@ static ssize_t store_down_differential(struct dbs_data *dbs_data,
 	return count;
 }
 
-static ssize_t store_gboost(struct dbs_data *dbs_data, const char *buf,
-		size_t count)
-{
-	struct ex_dbs_tuners *ex_tuners = dbs_data->tuners;
-	unsigned int input;
-	int ret;
-	ret = sscanf(buf, "%u", &input);
-
-	if (ret != 1 || input > 1)
-		return -EINVAL;
-
-	if (input == 0)
-		ex_data.g_count = 0;
-
-	ex_tuners->gboost = input;
-	return count;
-}
-
-static ssize_t store_gboost_min_freq(struct dbs_data *dbs_data,
-		const char *buf, size_t count)
-{
-	struct ex_dbs_tuners *ex_tuners = dbs_data->tuners;
-	unsigned int input;
-	int ret;
-	ret = sscanf(buf, "%u", &input);
-
-	if (ret != 1)
-		return -EINVAL;
-
-	ex_tuners->gboost_min_freq = input;
-	return count;
-}
-
 static ssize_t store_active_floor_freq(struct dbs_data *dbs_data,
 		const char *buf, size_t count)
 {
@@ -664,8 +627,6 @@ static ssize_t store_sampling_down_factor(struct dbs_data *dbs_data,
 show_store_one(ex, sampling_rate);
 show_store_one(ex, up_threshold);
 show_store_one(ex, down_differential);
-show_store_one(ex, gboost);
-show_store_one(ex, gboost_min_freq);
 show_store_one(ex, active_floor_freq);
 show_store_one(ex, sampling_down_factor);
 declare_show_sampling_rate_min(ex);
@@ -673,8 +634,6 @@ declare_show_sampling_rate_min(ex);
 gov_sys_pol_attr_rw(sampling_rate);
 gov_sys_pol_attr_rw(up_threshold);
 gov_sys_pol_attr_rw(down_differential);
-gov_sys_pol_attr_rw(gboost);
-gov_sys_pol_attr_rw(gboost_min_freq);
 gov_sys_pol_attr_rw(active_floor_freq);
 gov_sys_pol_attr_rw(sampling_down_factor);
 gov_sys_pol_attr_ro(sampling_rate_min);
@@ -684,8 +643,6 @@ static struct attribute *dbs_attributes_gov_sys[] = {
 	&sampling_rate_gov_sys.attr,
 	&up_threshold_gov_sys.attr,
 	&down_differential_gov_sys.attr,
-	&gboost_gov_sys.attr,
-	&gboost_min_freq_gov_sys.attr,
 	&active_floor_freq_gov_sys.attr,
 	&sampling_down_factor_gov_sys.attr,
 	NULL
@@ -701,8 +658,6 @@ static struct attribute *dbs_attributes_gov_pol[] = {
 	&sampling_rate_gov_pol.attr,
 	&up_threshold_gov_pol.attr,
 	&down_differential_gov_pol.attr,
-	&gboost_gov_pol.attr,
-	&gboost_min_freq_gov_pol.attr,
 	&active_floor_freq_gov_pol.attr,
 	&sampling_down_factor_gov_pol.attr,
 	NULL
@@ -728,8 +683,6 @@ static int ex_init(struct dbs_data *dbs_data, struct cpufreq_policy *policy)
 	tuners->up_threshold = DEF_FREQUENCY_UP_THRESHOLD;
 	tuners->down_differential = DEF_FREQUENCY_DOWN_DIFFERENTIAL;
 	tuners->ignore_nice_load = 0;
-	tuners->gboost = 1;
-	tuners->gboost_min_freq = DEF_GBOOST_MIN_FREQ;
 	tuners->active_floor_freq = DEF_ACTIVE_FLOOR_FREQ;
 	tuners->sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR;
 
