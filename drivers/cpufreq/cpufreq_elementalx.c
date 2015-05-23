@@ -26,14 +26,11 @@
 #define FREQ_NEED_BURST(x)			(x < 800000 ? 1 : 0)
 #define MAX(x,y)				(x > y ? x : y)
 #define MIN(x,y)				(x < y ? x : y)
-#define TABLE_SIZE				5
+#define TABLE_SIZE				12
 
 static DEFINE_PER_CPU(struct ex_cpu_dbs_info_s, ex_cpu_dbs_info);
 
 static unsigned int up_threshold_level[2] __read_mostly = {95, 85};
-static struct cpufreq_frequency_table *tbl = NULL;
-static unsigned int *tblmap[TABLE_SIZE] __read_mostly;
-static unsigned int tbl_select[4];
 
 static struct ex_governor_data {
 #define DEF_INPUT_EVENT_TIMEOUT			(300)
@@ -138,25 +135,63 @@ static void dbs_deinit_freq_map_table(void)
 
 	if (!tbl)
 		return;
+static unsigned int tblmap1[TABLE_SIZE] __read_mostly = {
+	616400,
+	757200,
+	840000,
+	960000,
+	1248000,
+	1344000,
+	1478400,
+	1555200,
+	1632000,
+	1728000,
+	1824000,
+	1958400,
+};
 
-	tbl = NULL;
+static unsigned int tblmap2[TABLE_SIZE] __read_mostly = {
+	773040,
+	899760,
+	1014960,
+	1072560,
+	1248000,
+	1344000,
+	1478400,
+	1555200,
+	1632000,
+	1728000,
+	1824000,
+	1958400,
+};
 
-	for (i = 0; i < TABLE_SIZE; i++)
-		kfree(tblmap[i]);
-}
+static unsigned int tblmap3[TABLE_SIZE] __read_mostly = {
+	851100,
+	956700,
+	1052700,
+	1100700,
+	1350400,
+	1416000,
+	1550400,
+	1627200,
+	1740800,
+	1824000,
+	1920000,
+	2054400,
+};
 
-static inline int get_cpu_freq_index(unsigned int freq)
+static inline int get_cpu_freq_index(unsigned int freq, struct dbs_data *dbs_data)
 {
 	static int saved_index = 0;
 	int index;
-
-	if (!tbl) {
+	
+	if (!dbs_data->freq_table) {
 		pr_warn("tbl is NULL, use previous value %d\n", saved_index);
 		return saved_index;
 	}
 
-	for (index = 0; (tbl[index].frequency != CPUFREQ_TABLE_END); index++) {
-		if (tbl[index].frequency >= freq) {
+	for (index = 0; (dbs_data->freq_table[index].frequency != CPUFREQ_TABLE_END); index++) {
+		if (dbs_data->freq_table[index].frequency >= freq) {
 			saved_index = index;
 			break;
 		}
@@ -256,6 +291,7 @@ static void ex_check_cpu(int cpu, unsigned int load)
 		if (input_event_boosted() && FREQ_NEED_BURST(policy->cur) &&
 		dbs_info->down_floor = 0;
 		int index = get_cpu_freq_index(cur_freq);
+		int index = get_cpu_freq_index(cur_freq, dbs_data);
 
 		if (FREQ_NEED_BURST(cur_freq) &&
 				load > up_threshold_level[0]) {
@@ -263,7 +299,7 @@ static void ex_check_cpu(int cpu, unsigned int load)
 		}
 		
 		else if (avg_load > up_threshold_level[0]) {
-			freq_next = tblmap[tbl_select[3]][index];
+			freq_next = tblmap3[index];
 		}
 		
 		else if (avg_load <= up_threshold_level[1]) {
@@ -274,15 +310,16 @@ static void ex_check_cpu(int cpu, unsigned int load)
 		else if (avg_load <= up_threshold_level[1]) {
 			freq_next = cur_freq;
 			freq_next = tblmap[tbl_select[1]][index];
+			freq_next = tblmap1[index];
 		}
 	
 		else {
 			if (load > up_threshold_level[0]) {
-				freq_next = tblmap[tbl_select[3]][index];
+				freq_next = tblmap3[index];
 			}
 		
 			else {
-				freq_next = tblmap[tbl_select[2]][index];
+				freq_next = tblmap2[index];
 			}
 		}
 
@@ -678,7 +715,7 @@ static struct attribute_group ex_attr_group_gov_pol = {
 
 /************************** sysfs end ************************/
 
-static int ex_init(struct dbs_data *dbs_data)
+static int ex_init(struct dbs_data *dbs_data, struct cpufreq_policy *policy)
 {
 	struct ex_dbs_tuners *tuners;
 
@@ -698,16 +735,15 @@ static int ex_init(struct dbs_data *dbs_data)
 
 	dbs_data->tuners = tuners;
 	dbs_data->min_sampling_rate = MIN_SAMPLING_RATE;
-
-	dbs_init_freq_map_table();
+	dbs_data->freq_table = cpufreq_frequency_get_table(policy->cpu);
 
 	mutex_init(&dbs_data->mutex);
+
 	return 0;
 }
 
 static void ex_exit(struct dbs_data *dbs_data)
 {
-	dbs_deinit_freq_map_table();
 	kfree(dbs_data->tuners);
 }
 
@@ -721,7 +757,7 @@ static struct common_dbs_data ex_dbs_cdata = {
 	.get_cpu_dbs_info_s = get_cpu_dbs_info_s,
 	.gov_dbs_timer = ex_dbs_timer,
 	.gov_check_cpu = ex_check_cpu,
-	.init = ex_init,
+	.init_ex = ex_init,
 	.exit = ex_exit,
 };
 
